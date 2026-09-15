@@ -1,0 +1,3 @@
+.profile-image { width: 72px; height: 72px; object-fit: cover; }
+.company-logo { width: 48px; height: 48px; object-fit: contain; }
+.pre-line { white-space: pre-line; }
