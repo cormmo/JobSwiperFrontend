@@ -1,16 +1,20 @@
+// The browser loads this page from port 8081, but all data comes from the backend on port 8080.
 const API_BASE = `${window.location.protocol}//${window.location.hostname || "localhost"}:8080`;
 const app = document.getElementById("app");
 const navigation = document.getElementById("navigation");
+// Session storage keeps the login for this browser tab. The other values only track the current UI.
 const state = {
     token: sessionStorage.getItem("jobswiperToken"),
     user: JSON.parse(sessionStorage.getItem("jobswiperUser") || "null"),
     pages: {}, filters: {}, editingJob: null, selectedJob: null
 };
 
+// Profile and job text comes from users. Escape it before inserting it into an HTML template.
 function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, character =>
         ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[character]);
 }
+// Images are data URLs from the backend. Only allow the image formats the backend accepts.
 function safeImage(value) {
     return typeof value === "string" && /^data:image\/(?:png|jpeg|gif);base64,[A-Za-z0-9+/=]+$/.test(value)
         ? value : "";
@@ -50,8 +54,10 @@ function showMessage(message, kind = "success") {
 }
 function showError(error) { showMessage(error.message || "Ein Fehler ist aufgetreten.", "danger"); }
 
+// Keep fetch, JWT headers, and API error handling in one place for every screen.
 async function api(path, options = {}) {
     const headers = {Accept: "application/json", ...(options.body ? {"Content-Type": "application/json"} : {})};
+    // Protected endpoints need the token returned by login or registration.
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
     let response;
     try {
@@ -61,6 +67,7 @@ async function api(path, options = {}) {
     }
     const body = response.status === 204 ? null : await response.json().catch(() => null);
     if (!response.ok) {
+        // An expired or invalid token sends the user back to login.
         if (response.status === 401 && state.token && !path.startsWith("/api/auth/login")) {
             clearSession();
             navigate("/login");
@@ -73,6 +80,7 @@ async function api(path, options = {}) {
     return body;
 }
 function json(data) { return JSON.stringify(data); }
+// Logout only needs to remove the locally stored JWT; the backend does not keep a login session.
 function clearSession() {
     sessionStorage.removeItem("jobswiperToken");
     sessionStorage.removeItem("jobswiperUser");
@@ -87,6 +95,7 @@ function homePath() {
     return state.user?.role === "ARBEITGEBER" ? "/employer/dashboard" :
         state.user?.role === "ADMIN" ? "/admin" : "/dashboard";
 }
+// Change the URL without a full page reload, then draw the screen for that URL.
 function navigate(path) {
     if (location.pathname !== path) history.pushState({}, "", path);
     render();
@@ -106,6 +115,7 @@ function renderNav() {
 async function render() {
     renderNav();
     const path = location.pathname;
+    // Show login to guests and keep each role on its own pages. The backend also checks roles.
     if (!state.token && path !== "/register") {
         if (path !== "/login") history.replaceState({}, "", "/login");
         renderNav(); renderAuth("login"); return;
@@ -150,6 +160,7 @@ function renderAuth(mode) {
     document.getElementById("auth-form").addEventListener("submit", async event => {
         event.preventDefault();
         const form = event.currentTarget;
+        // HTML validation runs first; the backend still validates every submitted value.
         if (!form.reportValidity()) return;
         const data = Object.fromEntries(new FormData(form));
         try {
@@ -160,6 +171,7 @@ function renderAuth(mode) {
     });
 }
 
+// A 404 here means the user has not created a profile yet, so show an empty form.
 async function ownProfile() {
     try { return await api(state.user.role === "ARBEITGEBER" ? "/api/employer/profile/me" : "/api/profile/me"); }
     catch (error) { if (error.status === 404) return null; throw error; }
@@ -187,6 +199,7 @@ async function renderDashboard() {
 
 let experienceCounter = 0;
 function experienceRow(item = {}) {
+    // Each repeated row needs unique label IDs, even though its input names stay the same.
     const rowId = ++experienceCounter;
     return `<div class="card mb-3 experience-row"><div class="card-body">
         <div class="d-flex justify-content-between"><h3 class="h6">Berufserfahrung</h3>${button("Entfernen", "remove-experience", "", "outline-danger")}</div>
@@ -218,6 +231,7 @@ async function renderEmployeeProfile() {
     document.getElementById("employee-form").addEventListener("submit", async event => {
         event.preventDefault(); const form = event.currentTarget; if (!form.reportValidity()) return;
         const values = Object.fromEntries(new FormData(form));
+        // FormData alone cannot group repeated experience fields, so read each row separately.
         const workExperience = [...form.querySelectorAll(".experience-row")].map((row, sortOrder) => ({
             company: row.querySelector('[name="company"]').value.trim(), position: row.querySelector('[name="position"]').value.trim(),
             startDate: row.querySelector('[name="startDate"]').value, endDate: row.querySelector('[name="endDate"]').value || null,
@@ -262,6 +276,7 @@ function bindImageForm(path) {
         event.preventDefault(); const file = event.currentTarget.querySelector('[name="image"]').files[0]; if (!file) return;
         if (file.size > 5 * 1024 * 1024) { showMessage("Das Bild darf höchstens 5 MB groß sein.", "danger"); return; }
         const reader = new FileReader();
+        // The image endpoint expects Base64 inside JSON, not a multipart file upload.
         reader.onload = async () => {
             try {
                 await api(path, {method: "PUT", body: json({imageBase64: reader.result})});
@@ -275,6 +290,7 @@ function bindImageForm(path) {
 async function renderManageJobs() {
     const profile = await ownProfile();
     const page = await api(`/api/jobs/mine?page=${state.pages.mine || 0}&size=10`);
+    // The same form creates a new job or edits the job chosen from the current page.
     const job = state.editingJob ? page.content.find(item => String(item.id) === String(state.editingJob)) : null;
     app.innerHTML = `${heading("Stellenangebote", "Erstelle und verwalte deine eigenen Jobs.")}
         ${!profile ? `<div class="alert alert-warning">Bitte zuerst das <a href="/employer/profile/edit" data-link>Unternehmensprofil erstellen</a>.</div>` : ""}
@@ -318,6 +334,7 @@ function jobCard(job, swiping = false) {
 async function renderJobs() {
     const profile = await ownProfile();
     const filters = state.filters.jobs || {};
+    // URLSearchParams safely adds optional filters and the current page to the API URL.
     const params = new URLSearchParams({page: state.pages.jobs || 0, size: 10});
     if (filters.category) params.set("category", filters.category);
     if (filters.location) params.set("location", filters.location);
@@ -348,6 +365,7 @@ function candidateCard(profile, jobs) {
 async function renderCandidates() {
     const ownJobs = await api("/api/jobs/mine?page=0&size=100");
     const activeJobs = ownJobs.content.filter(job => job.active);
+    // Employers must choose one of their active jobs before rating an employee.
     if (!activeJobs.some(job => String(job.id) === String(state.selectedJob))) state.selectedJob = activeJobs[0]?.id || null;
     const filters = state.filters.candidates || {};
     const params = new URLSearchParams({page: state.pages.candidates || 0, size: 10});
@@ -380,28 +398,204 @@ async function renderMatches() {
         </div></div></div>`).join("")}</div>${pageControls("matches", page)}` : empty("Noch keine Matches vorhanden.")}`;
 }
 
+function adminOverviewHtml(overview) {
+    return `<div class="row g-3 mb-4">
+        <div class="col-md-4"><div class="card"><div class="card-body">
+            <div class="text-muted">Benutzer</div>
+            <div class="fs-3">${overview.users}</div>
+        </div></div></div>
+        <div class="col-md-4"><div class="card"><div class="card-body">
+            <div class="text-muted">Aktive Stellen</div>
+            <div class="fs-3">${overview.activeJobOffers}</div>
+        </div></div></div>
+        <div class="col-md-4"><div class="card"><div class="card-body">
+            <div class="text-muted">Matches</div>
+            <div class="fs-3">${overview.matches}</div>
+        </div></div></div>
+    </div>`;
+}
+
+function adminTabsHtml(activeSection) {
+    const sections = [
+        ["users", "Benutzer"],
+        ["jobs", "Stellenangebote"],
+        ["matches", "Matches"]
+    ];
+    const tabs = sections.map(([section, label]) => {
+        const style = section === activeSection ? "primary" : "outline-secondary";
+        return button(label, "admin-section", section, style);
+    }).join("");
+    return `<div class="d-flex flex-wrap gap-2 mb-3">${tabs}</div>`;
+}
+
+function adminUserRowHtml(user) {
+    let action = "–";
+    if (user.id !== state.user.id) {
+        const label = user.active ? "Deaktivieren" : "Aktivieren";
+        action = button(label, "admin-user", user.id, "outline-secondary", `data-active="${!user.active}"`);
+    }
+    return `<tr>
+        <td>${text(user.username)}<div class="small text-muted">${text(user.email)}</div></td>
+        <td>${text(user.role)}</td>
+        <td>${user.active ? "Aktiv" : "Inaktiv"}</td>
+        <td>${action}</td>
+    </tr>`;
+}
+
+function adminJobRowHtml(job) {
+    const label = job.active ? "Deaktivieren" : "Aktivieren";
+    const action = button(label, "admin-job", job.id, "outline-secondary", `data-active="${!job.active}"`);
+    return `<tr>
+        <td>${text(job.title)}<div class="small text-muted">${text(job.companyName)}</div></td>
+        <td>${text(job.location)}</td>
+        <td>${job.active ? "Aktiv" : "Inaktiv"}</td>
+        <td>${action}</td>
+    </tr>`;
+}
+
+function adminMatchRowHtml(match) {
+    return `<tr>
+        <td>${text(match.jobOffer.title)}</td>
+        <td>${text(match.employee.username)}</td>
+        <td>${text(match.employer.username)}</td>
+        <td>${date(match.createdAt)}</td>
+    </tr>`;
+}
+
+function adminTableHtml(section, page) {
+    if (page.content.length === 0) return empty("Keine Einträge vorhanden.");
+
+    let headers;
+    let renderRow;
+    if (section === "users") {
+        headers = ["Benutzer", "Rolle", "Status", "Aktion"];
+        renderRow = adminUserRowHtml;
+    } else if (section === "jobs") {
+        headers = ["Stelle", "Standort", "Status", "Aktion"];
+        renderRow = adminJobRowHtml;
+    } else {
+        headers = ["Stelle", "Arbeitnehmer", "Arbeitgeber", "Datum"];
+        renderRow = adminMatchRowHtml;
+    }
+
+    const headerCells = headers.map(label => `<th scope="col">${label}</th>`).join("");
+    const rows = page.content.map(renderRow).join("");
+    return `<div class="table-responsive">
+        <table class="table table-striped align-middle">
+            <thead><tr>${headerCells}</tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+    </div>${pageControls(`admin-${section}`, page)}`;
+}
+
+function adminMatchSearchFormHtml(query, searching) {
+    return `<form id="admin-match-search" class="row g-2 align-items-end mb-3" role="search">
+        <div class="col-md-8">
+            <label class="form-label" for="admin-match-query">Arbeitnehmer oder Arbeitgeber suchen</label>
+            <input class="form-control" id="admin-match-query" name="query" type="search"
+                maxlength="254" required value="${escapeHtml(query)}" placeholder="Benutzername oder E-Mail">
+        </div>
+        <div class="col-md-4 d-flex gap-2">
+            <button class="btn btn-primary" type="submit">Suchen</button>
+            ${searching ? `<button class="btn btn-outline-secondary" id="admin-match-clear" type="button">Zurücksetzen</button>` : ""}
+        </div>
+    </form>`;
+}
+
+function adminMatchGroupHtml(title, groups, otherRole, otherRoleLabel) {
+    const cards = groups.map(group => {
+        const rows = group.matches.map(match => `<tr>
+            <td>${text(match.jobOffer.title)}</td>
+            <td>${text(match[otherRole].username)}</td>
+            <td>${text(match.status)}</td>
+            <td>${date(match.createdAt)}</td>
+        </tr>`).join("");
+        return `<div class="card mb-3"><div class="card-body">
+            <h3 class="h6 mb-1">${text(group.user.username)}</h3>
+            <p class="small text-muted">${text(group.user.email)} · ${group.matches.length} Matches</p>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr>
+                        <th scope="col">Stelle</th>
+                        <th scope="col">${otherRoleLabel}</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Datum</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div></div>`;
+    }).join("");
+    return `<section class="mb-4"><h2 class="h5">${title} (${groups.length})</h2>${cards}</section>`;
+}
+
+function adminMatchSearchResultsHtml(results) {
+    if (results.employees.length === 0 && results.employers.length === 0) {
+        return empty("Keine Matches für diese Suche gefunden.");
+    }
+    const employees = adminMatchGroupHtml("Arbeitnehmer", results.employees, "employer", "Arbeitgeber");
+    const employers = adminMatchGroupHtml("Arbeitgeber", results.employers, "employee", "Arbeitnehmer");
+    return employees + employers;
+}
+
 async function renderAdmin() {
     const section = state.filters.adminSection || "users";
-    const [overview, page] = await Promise.all([
-        api("/api/admin/overview"), api(`/api/admin/${section}?page=${state.pages[`admin-${section}`] || 0}&size=10`)
+    const searchQuery = state.filters.adminMatchSearch || "";
+    const searchingMatches = section === "matches" && searchQuery.length > 0;
+
+    // Search returns grouped matches; the regular tab endpoints return a page.
+    let dataRequest;
+    if (searchingMatches) {
+        const params = new URLSearchParams({query: searchQuery});
+        dataRequest = api(`/api/admin/matches/search?${params}`);
+    } else {
+        const pageNumber = state.pages[`admin-${section}`] || 0;
+        dataRequest = api(`/api/admin/${section}?page=${pageNumber}&size=10`);
+    }
+    const [overview, data] = await Promise.all([
+        api("/api/admin/overview"),
+        dataRequest
     ]);
-    const sections = [["users", "Benutzer"], ["jobs", "Stellenangebote"], ["matches", "Matches"]];
-    let rows = "";
-    if (section === "users") rows = page.content.map(user => `<tr><td>${text(user.username)}<div class="small text-muted">${text(user.email)}</div></td>
-        <td>${text(user.role)}</td><td>${user.active ? "Aktiv" : "Inaktiv"}</td><td>${user.id === state.user.id ? "–" : button(user.active ? "Deaktivieren" : "Aktivieren", "admin-user", user.id, "outline-secondary", `data-active="${!user.active}"`)}</td></tr>`).join("");
-    if (section === "jobs") rows = page.content.map(job => `<tr><td>${text(job.title)}<div class="small text-muted">${text(job.companyName)}</div></td>
-        <td>${text(job.location)}</td><td>${job.active ? "Aktiv" : "Inaktiv"}</td><td>${button(job.active ? "Deaktivieren" : "Aktivieren", "admin-job", job.id, "outline-secondary", `data-active="${!job.active}"`)}</td></tr>`).join("");
-    if (section === "matches") rows = page.content.map(match => `<tr><td>${text(match.jobOffer.title)}</td><td>${text(match.employee.username)}</td>
-        <td>${text(match.employer.username)}</td><td>${date(match.createdAt)}</td></tr>`).join("");
-    app.innerHTML = `${heading("Administration")}
-        <div class="row g-3 mb-4"><div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted">Benutzer</div><div class="fs-3">${overview.users}</div></div></div></div>
-        <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted">Aktive Stellen</div><div class="fs-3">${overview.activeJobOffers}</div></div></div></div>
-        <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted">Matches</div><div class="fs-3">${overview.matches}</div></div></div></div></div>
-        <div class="d-flex flex-wrap gap-2 mb-3">${sections.map(([key, label]) => button(label, "admin-section", key, key === section ? "primary" : "outline-secondary")).join("")}</div>
-        ${page.content.length ? `<div class="table-responsive"><table class="table table-striped align-middle"><thead><tr>${(section === "users" ? ["Benutzer", "Rolle", "Status", "Aktion"] : section === "jobs" ? ["Stelle", "Standort", "Status", "Aktion"] : ["Stelle", "Arbeitnehmer", "Arbeitgeber", "Datum"]).map(label => `<th scope="col">${label}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>${pageControls(`admin-${section}`, page)}` : empty("Keine Einträge vorhanden.")}`;
+
+    let resultsHtml;
+    if (searchingMatches) {
+        resultsHtml = adminMatchSearchResultsHtml(data);
+    } else {
+        resultsHtml = adminTableHtml(section, data);
+    }
+
+    let searchFormHtml = "";
+    if (section === "matches") {
+        searchFormHtml = adminMatchSearchFormHtml(searchQuery, searchingMatches);
+    }
+
+    app.innerHTML = heading("Administration")
+        + adminOverviewHtml(overview)
+        + adminTabsHtml(section)
+        + searchFormHtml
+        + resultsHtml;
+
+    const searchForm = document.getElementById("admin-match-search");
+    if (searchForm) {
+        searchForm.addEventListener("submit", event => {
+            event.preventDefault();
+            state.filters.adminMatchSearch = event.currentTarget.elements.query.value.trim();
+            renderAdmin().catch(showError);
+        });
+    }
+
+    const clearButton = document.getElementById("admin-match-clear");
+    if (clearButton) {
+        clearButton.addEventListener("click", () => {
+            state.filters.adminMatchSearch = "";
+            state.pages["admin-matches"] = 0;
+            renderAdmin().catch(showError);
+        });
+    }
 }
 
 document.addEventListener("click", async event => {
+    // Screens replace app.innerHTML, so one listener on document handles their new buttons too.
     const link = event.target.closest("a[data-link]");
     if (link) { event.preventDefault(); navigate(link.pathname); return; }
     const control = event.target.closest("[data-action]");
@@ -426,19 +620,22 @@ document.addEventListener("click", async event => {
             showMessage("Status geändert."); renderManageJobs();
         } else if (action === "swipe-job") {
             const result = await api(`/api/swipes/job/${id}`, {method: "POST", body: json({decision})});
+            // The backend decides whether this like completed a two-sided match.
             showMessage(result.matchCreated ? "Match! Die andere Seite hat ebenfalls Interesse." : "Bewertung gespeichert.");
         } else if (action === "swipe-candidate") {
+            // Candidate swipes include the chosen job ID because an employer may have several jobs.
             const result = await api(`/api/swipes/profile/${id}`, {method: "POST", body: json({jobOfferId: Number(state.selectedJob), decision})});
             showMessage(result.matchCreated ? "Match! Die andere Seite hat ebenfalls Interesse." : "Bewertung gespeichert.");
         } else if (action === "admin-section") {
-            state.filters.adminSection = id; renderAdmin();
+            state.filters.adminSection = id; await renderAdmin();
         } else if (action === "admin-user" || action === "admin-job") {
             await api(`/api/admin/${action === "admin-user" ? "users" : "jobs"}/${id}/active`, {method: "PATCH", body: json({active: active === "true"})});
-            showMessage("Status geändert."); renderAdmin();
+            showMessage("Status geändert."); await renderAdmin();
         }
     } catch (error) { showError(error); }
 });
 window.addEventListener("popstate", render);
+// On refresh, ask the backend whether the stored token still belongs to an active user.
 (async () => {
     if (state.token) {
         try { state.user = await api("/api/auth/me"); sessionStorage.setItem("jobswiperUser", json(state.user)); }
